@@ -1,0 +1,26 @@
+# Build artifacts
+/build/
+/CMakeFiles/
+/CMakeCache.txt
+/cmake_install.cmake
+/Makefile
+/*.o
+/*.obj
+/*.exe
+/*.dll
+/*.lib
+/*.so
+/*.dylib
+
+# Python artifacts
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.ipynb_checkpoints
+
+# Data and weights
+weights/
+
+# Third-party SDK placeholder
+third_party/
