@@ -44,11 +44,69 @@ That x64 build is useful to verify the source compiles, but it will not be able 
 ./npu_inference_engine
 ```
 
+## Neural Canvas workflow
+
+Generate a unique 28x28 grayscale image from a random latent vector.  The
+engine uses a VAE-trained Decoder whose latent space is a smooth Gaussian ball,
+so every random point produces a coherent image — no static.
+
+### Step 1 — Train the VAE Decoder (recommended)
+
+```bash
+python scripts/train_vae.py
+```
+
+Trains a Variational Autoencoder on MNIST handwritten digits.  The Encoder forces the
+entire dataset into a smooth `N(0, I)` sphere via the KL term (ELBO loss).
+After training, **only the Decoder** is saved to `weights/generator.pth`
+— the C++ engine and weight extractor are completely unchanged.
+
+Falls back to a synthetic noise dataset if torchvision is not installed.
+
+Alternatively, the original GAN trainer is still available:
+
+```bash
+python scripts/train_generator.py
+```
+
+### Step 2 — Extract weights to binary
+
+```bash
+python scripts/extract_generator_weights.py
+```
+
+Writes 6 flat little-endian float32 `.bin` files to `weights/`:
+
+| File | Shape | Floats |
+|---|---|---|
+| `fc1_weight.bin` | [128, 16] | 2 048 |
+| `fc1_bias.bin` | [128] | 128 |
+| `fc2_weight.bin` | [512, 128] | 65 536 |
+| `fc2_bias.bin` | [512] | 512 |
+| `fc3_weight.bin` | [784, 512] | 401 408 |
+| `fc3_bias.bin` | [784] | 784 |
+
+### Step 3 — Run the engine
+
+```bash
+.\build\bin\Debug\npu_inference_engine.exe
+```
+
+The engine samples a fresh `z ~ N(0,1)` 16-dim latent vector, runs the forward
+pass in pure C++, and writes `output.bmp` — a 28x28 grayscale image.  Every
+run produces a different image.
+
 ## Python scripts
 
-- `scripts/train_model.py` trains a small MLP using PyTorch and saves the model to `weights/model.pth`
-- `scripts/extract_weights.py` extracts raw FP32 tensor values from the saved state dict and writes them to `weights/weights.json`
+- `scripts/train_vae.py` — **recommended** VAE Decoder trainer (smooth latent space, no static)
+- `scripts/train_generator.py` — original GAN Generator trainer
+- `scripts/extract_generator_weights.py` — exports Decoder/Generator weights to flat float32 `.bin` files
+- `scripts/train_model.py` — original tabular MLP trainer
+- `scripts/extract_weights.py` — original JSON weight extractor
 
 ## Notes
 
-Place Qualcomm AI Engine Direct SDK headers and libs into `third_party/qnn_sdk/` before integrating the actual NPU runtime.
+Place Qualcomm AI Engine Direct SDK headers and libs into `third_party/qnn_sdk/`
+before integrating the actual NPU runtime.  The current C++ engine performs the
+forward pass in software; the weight binary format is already compatible with
+QNN `Gemm` operator inputs.
