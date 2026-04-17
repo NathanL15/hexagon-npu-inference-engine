@@ -1,14 +1,17 @@
 // Neural Canvas - Hexagon NPU Inference Engine
 // =============================================
-// Loads a trained GAN Generator's weights from flat float32 binary files,
-// samples a random 16-dim latent vector, runs a pure-C++ forward pass:
+// Loads trained decoder weights from flat float32 binary files,
+// samples a random 16-dim latent vector, and runs the full decoder graph
+// on Qualcomm QNN/HTP.
 //
 //   z (16) -> Linear(16,128) -> ReLU
 //          -> Linear(128,512) -> ReLU
 //          -> Linear(512,784) -> Sigmoid
 //          -> scale x255 -> 28x28 grayscale BMP
 //
-// Each run produces a unique image.  No Qualcomm SDK required for this step.
+// Each run produces a unique image. There is no CPU neural-network fallback.
+
+#include "QnnManager.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -43,41 +46,6 @@ static std::vector<float> loadBin(const std::string &path)
         throw std::runtime_error("Read error on weight file: " + path);
 
     return data;
-}
-
-// ---------------------------------------------------------------------------
-// Dense layer: y[o] = sum_i(W[o*in + i] * x[i]) + b[o]
-// W is stored row-major: W[out_features][in_features]
-// ---------------------------------------------------------------------------
-
-static std::vector<float> denseLayer(
-    const std::vector<float> &x,
-    const std::vector<float> &W,
-    const std::vector<float> &b,
-    int inFeatures,
-    int outFeatures)
-{
-    std::vector<float> y(static_cast<size_t>(outFeatures));
-    for (int o = 0; o < outFeatures; ++o) {
-        float sum = b[static_cast<size_t>(o)];
-        const float *row = W.data() + static_cast<size_t>(o) * inFeatures;
-        for (int i = 0; i < inFeatures; ++i)
-            sum += row[i] * x[static_cast<size_t>(i)];
-        y[static_cast<size_t>(o)] = sum;
-    }
-    return y;
-}
-
-static void applyReLU(std::vector<float> &x)
-{
-    for (float &v : x)
-        v = v > 0.0f ? v : 0.0f;
-}
-
-static void applySigmoid(std::vector<float> &x)
-{
-    for (float &v : x)
-        v = 1.0f / (1.0f + std::exp(-v));
 }
 
 // ---------------------------------------------------------------------------
@@ -189,16 +157,24 @@ int main()
     std::cout << "]\n";
 
     // ------------------------------------------------------------------
-    // 3. Forward pass through the Generator
+    // 3. Forward pass through full decoder on Qualcomm QNN backend
     // ------------------------------------------------------------------
-    auto h1 = denseLayer(z,  fc1W, fc1b,  16, 128);
-    applyReLU(h1);
+    std::vector<float> out;
+    QnnManager qnn;
+    if (!qnn.initialize()) {
+        std::cerr << "[ERROR] Failed to initialize QNN backend.\n";
+        return 1;
+    }
+    if (!qnn.buildGraph(fc1W, fc1b, fc2W, fc2b, fc3W, fc3b)) {
+        std::cerr << "[ERROR] Failed to build full QNN decoder graph.\n";
+        return 1;
+    }
+    if (!qnn.runInference(z, out) || out.size() != 784) {
+        std::cerr << "[ERROR] Failed to execute full QNN decoder inference.\n";
+        return 1;
+    }
 
-    auto h2 = denseLayer(h1, fc2W, fc2b, 128, 512);
-    applyReLU(h2);
-
-    auto out = denseLayer(h2, fc3W, fc3b, 512, 784);
-    applySigmoid(out);
+    std::cout << "[OK] Full decoder executed on Qualcomm QNN backend.\n";
 
     const float minVal = *std::min_element(out.begin(), out.end());
     const float maxVal = *std::max_element(out.begin(), out.end());
