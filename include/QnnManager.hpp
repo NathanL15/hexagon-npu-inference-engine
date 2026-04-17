@@ -6,10 +6,15 @@
 
 class QnnManager {
 public:
+    enum class Backend {
+        Htp,
+        Cpu
+    };
+
     QnnManager();
     ~QnnManager();
 
-    bool initialize();
+    bool initialize(Backend backend = Backend::Htp);
     bool buildGraph(const std::vector<float> &fc1Weight,
                     const std::vector<float> &fc1Bias,
                     const std::vector<float> &fc2Weight,
@@ -17,6 +22,7 @@ public:
                     const std::vector<float> &fc3Weight,
                     const std::vector<float> &fc3Bias);
     bool runInference(const std::vector<float> &input, std::vector<float> &output);
+    std::string backendName() const;
 
 private:
     struct Impl;

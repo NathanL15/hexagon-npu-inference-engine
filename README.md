@@ -44,6 +44,30 @@ That x64 build is useful to verify the source compiles, but it will not be able 
 ./npu_inference_engine
 ```
 
+## Benchmark CPU vs NPU
+
+The executable now supports benchmark mode and backend selection:
+
+```bash
+./npu_inference_engine --benchmark --backend npu --warmup 20 --iters 200
+./npu_inference_engine --benchmark --backend cpu --warmup 20 --iters 200
+```
+
+Each benchmark run prints a machine-parseable line starting with `BENCHMARK_RESULT`.
+
+To run both backends and print a comparison report with latency, throughput, and an execution-efficiency proxy:
+
+```bash
+python scripts/compare_npu_cpu_performance.py --exe build/bin/Debug/npu_inference_engine.exe --warmup 20 --iters 200 --repeats 3
+```
+
+The script reports:
+
+- Average and p95 latency for NPU and CPU
+- Throughput (inferences per second)
+- NPU vs CPU speedup and percent gains
+- An execution-efficiency proxy (`throughput / cold-path-ms`)
+
 ## Neural Canvas workflow
 
 Generate a unique 28x28 grayscale image from a random latent vector.  The

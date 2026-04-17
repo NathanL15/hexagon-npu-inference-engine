@@ -70,6 +70,7 @@ struct QnnManager::Impl {
     Qnn_BackendHandle_t backend = nullptr;
     Qnn_ContextHandle_t context = nullptr;
     Qnn_GraphHandle_t graph = nullptr;
+    std::string backendName = "unknown";
 
     std::vector<float> fc1W;
     std::vector<float> fc1B;
@@ -79,8 +80,10 @@ struct QnnManager::Impl {
     std::vector<float> fc3B;
 
     std::vector<float> fc1MM;
+    std::vector<float> fc1Add;
     std::vector<float> fc1Act;
     std::vector<float> fc2MM;
+    std::vector<float> fc2Add;
     std::vector<float> fc2Act;
     std::vector<float> fc3MM;
     std::vector<float> outputBuf;
@@ -97,11 +100,13 @@ struct QnnManager::Impl {
     Qnn_Tensor_t fc1WeightTensor = QNN_TENSOR_INIT;
     Qnn_Tensor_t fc1BiasTensor = QNN_TENSOR_INIT;
     Qnn_Tensor_t fc1MatMulTensor = QNN_TENSOR_INIT;
+    Qnn_Tensor_t fc1AddTensor = QNN_TENSOR_INIT;
     Qnn_Tensor_t fc1OutTensor = QNN_TENSOR_INIT;
 
     Qnn_Tensor_t fc2WeightTensor = QNN_TENSOR_INIT;
     Qnn_Tensor_t fc2BiasTensor = QNN_TENSOR_INIT;
     Qnn_Tensor_t fc2MatMulTensor = QNN_TENSOR_INIT;
+    Qnn_Tensor_t fc2AddTensor = QNN_TENSOR_INIT;
     Qnn_Tensor_t fc2OutTensor = QNN_TENSOR_INIT;
 
     Qnn_Tensor_t fc3WeightTensor = QNN_TENSOR_INIT;
@@ -151,12 +156,21 @@ QnnManager::~QnnManager() {
     impl_->cleanup();
 }
 
-bool QnnManager::initialize() {
-    std::cout << "Initializing QNN manager (HTP backend)...\n";
+bool QnnManager::initialize(Backend backend) {
+    const char *dllPath = nullptr;
+    if (backend == Backend::Cpu) {
+        dllPath = "third_party/qnn_sdk/lib/aarch64-windows-msvc/QnnCpu.dll";
+        impl_->backendName = "cpu";
+    } else {
+        dllPath = "third_party/qnn_sdk/lib/aarch64-windows-msvc/QnnHtp.dll";
+        impl_->backendName = "npu";
+    }
 
-    impl_->backendLib = LoadLibraryA("third_party/qnn_sdk/lib/aarch64-windows-msvc/QnnHtp.dll");
+    std::cout << "Initializing QNN manager (" << impl_->backendName << " backend)...\n";
+
+    impl_->backendLib = LoadLibraryA(dllPath);
     if (!impl_->backendLib) {
-        std::cerr << "QNN init failed: could not load QnnHtp.dll\n";
+        std::cerr << "QNN init failed: could not load backend DLL at " << dllPath << "\n";
         return false;
     }
 
@@ -201,7 +215,7 @@ bool QnnManager::initialize() {
     }
 
     initialized_ = true;
-    std::cout << "QNN backend/context initialized.\n";
+    std::cout << "QNN backend/context initialized (" << impl_->backendName << ").\n";
     return true;
 }
 
@@ -231,8 +245,10 @@ bool QnnManager::buildGraph(const std::vector<float> &fc1Weight,
     impl_->fc3B = fc3Bias;
 
     impl_->fc1MM.assign(kFc1Dim, 0.0f);
+    impl_->fc1Add.assign(kFc1Dim, 0.0f);
     impl_->fc1Act.assign(kFc1Dim, 0.0f);
     impl_->fc2MM.assign(kFc2Dim, 0.0f);
+    impl_->fc2Add.assign(kFc2Dim, 0.0f);
     impl_->fc2Act.assign(kFc2Dim, 0.0f);
     impl_->fc3MM.assign(kFc3Dim, 0.0f);
     impl_->outputBuf.assign(kFc3Dim, 0.0f);
@@ -277,6 +293,12 @@ bool QnnManager::buildGraph(const std::vector<float> &fc1Weight,
                  impl_->dim1x128,
                  impl_->fc1MM.data(),
                  static_cast<uint32_t>(impl_->fc1MM.size() * sizeof(float)));
+    initTensorV1(impl_->fc1AddTensor,
+                 "fc1_add_out",
+                 QNN_TENSOR_TYPE_NATIVE,
+                 impl_->dim1x128,
+                 impl_->fc1Add.data(),
+                 static_cast<uint32_t>(impl_->fc1Add.size() * sizeof(float)));
     initTensorV1(impl_->fc1OutTensor,
                  "fc1_relu_out",
                  QNN_TENSOR_TYPE_NATIVE,
@@ -302,6 +324,12 @@ bool QnnManager::buildGraph(const std::vector<float> &fc1Weight,
                  impl_->dim1x512,
                  impl_->fc2MM.data(),
                  static_cast<uint32_t>(impl_->fc2MM.size() * sizeof(float)));
+    initTensorV1(impl_->fc2AddTensor,
+                 "fc2_add_out",
+                 QNN_TENSOR_TYPE_NATIVE,
+                 impl_->dim1x512,
+                 impl_->fc2Add.data(),
+                 static_cast<uint32_t>(impl_->fc2Add.size() * sizeof(float)));
     initTensorV1(impl_->fc2OutTensor,
                  "fc2_relu_out",
                  QNN_TENSOR_TYPE_NATIVE,
@@ -339,10 +367,12 @@ bool QnnManager::buildGraph(const std::vector<float> &fc1Weight,
         &impl_->fc1WeightTensor,
         &impl_->fc1BiasTensor,
         &impl_->fc1MatMulTensor,
+        &impl_->fc1AddTensor,
         &impl_->fc1OutTensor,
         &impl_->fc2WeightTensor,
         &impl_->fc2BiasTensor,
         &impl_->fc2MatMulTensor,
+        &impl_->fc2AddTensor,
         &impl_->fc2OutTensor,
         &impl_->fc3WeightTensor,
         &impl_->fc3BiasTensor,
@@ -396,12 +426,12 @@ bool QnnManager::buildGraph(const std::vector<float> &fc1Weight,
     }
 
     Qnn_Tensor_t fc1AddIn[2] = {impl_->fc1MatMulTensor, impl_->fc1BiasTensor};
-    Qnn_Tensor_t fc1AddOut[1] = {impl_->fc1OutTensor};
+    Qnn_Tensor_t fc1AddOut[1] = {impl_->fc1AddTensor};
     if (!addNode("fc1_add", QNN_OP_ELEMENT_WISE_BINARY, impl_->addParams, 1, fc1AddIn, 2, fc1AddOut, 1)) {
         return false;
     }
 
-    Qnn_Tensor_t fc1ReluIn[1] = {impl_->fc1OutTensor};
+    Qnn_Tensor_t fc1ReluIn[1] = {impl_->fc1AddTensor};
     Qnn_Tensor_t fc1ReluOut[1] = {impl_->fc1OutTensor};
     if (!addNode("fc1_relu", QNN_OP_RELU, nullptr, 0, fc1ReluIn, 1, fc1ReluOut, 1)) {
         return false;
@@ -414,12 +444,12 @@ bool QnnManager::buildGraph(const std::vector<float> &fc1Weight,
     }
 
     Qnn_Tensor_t fc2AddIn[2] = {impl_->fc2MatMulTensor, impl_->fc2BiasTensor};
-    Qnn_Tensor_t fc2AddOut[1] = {impl_->fc2OutTensor};
+    Qnn_Tensor_t fc2AddOut[1] = {impl_->fc2AddTensor};
     if (!addNode("fc2_add", QNN_OP_ELEMENT_WISE_BINARY, impl_->addParams, 1, fc2AddIn, 2, fc2AddOut, 1)) {
         return false;
     }
 
-    Qnn_Tensor_t fc2ReluIn[1] = {impl_->fc2OutTensor};
+    Qnn_Tensor_t fc2ReluIn[1] = {impl_->fc2AddTensor};
     Qnn_Tensor_t fc2ReluOut[1] = {impl_->fc2OutTensor};
     if (!addNode("fc2_relu", QNN_OP_RELU, nullptr, 0, fc2ReluIn, 1, fc2ReluOut, 1)) {
         return false;
@@ -450,7 +480,7 @@ bool QnnManager::buildGraph(const std::vector<float> &fc1Weight,
     }
 
     impl_->graphBuilt = true;
-    std::cout << "QNN full decoder graph finalized on HTP backend.\n";
+    std::cout << "QNN full decoder graph finalized on " << impl_->backendName << " backend.\n";
     return true;
 }
 
@@ -485,4 +515,8 @@ bool QnnManager::runInference(const std::vector<float> &input, std::vector<float
 
     output = impl_->outputBuf;
     return true;
+}
+
+std::string QnnManager::backendName() const {
+    return impl_->backendName;
 }
