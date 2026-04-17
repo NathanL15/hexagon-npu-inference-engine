@@ -24,3 +24,18 @@ weights/
 
 # Third-party SDK placeholder
 third_party/
+
+# Temporary report/image artifacts
+npu_report.tex
+output.jpg
+
+# LaTeX build artifacts
+*.aux
+*.log
+*.out
+*.toc
+*.lof
+*.lot
+*.fls
+*.fdb_latexmk
+*.synctex.gz
