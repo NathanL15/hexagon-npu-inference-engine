@@ -1,16 +1,3 @@
-// Neural Canvas - Hexagon NPU Inference Engine
-// =============================================
-// Loads trained decoder weights from flat float32 binary files,
-// samples a random 16-dim latent vector, and runs the full decoder graph
-// on Qualcomm QNN/HTP.
-//
-//   z (16) -> Linear(16,128) -> ReLU
-//          -> Linear(128,512) -> ReLU
-//          -> Linear(512,784) -> Sigmoid
-//          -> scale x255 -> 28x28 grayscale BMP
-//
-// Each run produces a unique image. There is no CPU neural-network fallback.
-
 #include "QnnManager.hpp"
 
 #include <algorithm>
@@ -27,10 +14,6 @@
 #include <string>
 #include <vector>
 
-// ---------------------------------------------------------------------------
-// Weight loading
-// ---------------------------------------------------------------------------
-
 static std::vector<float> loadBin(const std::string &path)
 {
     std::ifstream f(path, std::ios::binary);
@@ -44,8 +27,8 @@ static std::vector<float> loadBin(const std::string &path)
     if (bytes == 0 || bytes % sizeof(float) != 0)
         throw std::runtime_error("Weight file has unexpected size: " + path);
 
-    std::vector<float> data(static_cast<size_t>(bytes) / sizeof(float));
-    f.read(reinterpret_cast<char *>(data.data()), bytes);
+    std::vector<float> data(bytes / sizeof(float));
+    f.read((char*)data.data(), bytes);
     if (!f)
         throw std::runtime_error("Read error on weight file: " + path);
 
@@ -155,14 +138,13 @@ static void denseLayer(const std::vector<float> &input,
                        int outDim,
                        std::vector<float> &output)
 {
-    output.assign(static_cast<size_t>(outDim), 0.0f);
+    output.assign(outDim, 0.0f);
     for (int o = 0; o < outDim; ++o) {
-        float sum = bias[static_cast<size_t>(o)];
-        const size_t rowOffset = static_cast<size_t>(o * inDim);
-        for (int i = 0; i < inDim; ++i) {
-            sum += weight[rowOffset + static_cast<size_t>(i)] * input[static_cast<size_t>(i)];
-        }
-        output[static_cast<size_t>(o)] = sum;
+        float sum = bias[o];
+        int rowOffset = o * inDim;
+        for (int i = 0; i < inDim; ++i)
+            sum += weight[rowOffset + i] * input[i];
+        output[o] = sum;
     }
 }
 
@@ -200,73 +182,63 @@ static void runCpuDecoder(const std::vector<float> &z,
     sigmoidInplace(out);
 }
 
-// ---------------------------------------------------------------------------
-// BMP writer  (24-bit RGB, grayscale via R=G=B; top-down via negative height)
-// ---------------------------------------------------------------------------
-
 static void writeBMP(
     const std::string &path,
     const std::vector<uint8_t> &pixels,
     int width,
     int height)
 {
-    // Each row must be padded to a 4-byte boundary.
-    // 28 * 3 = 84 bytes -> 84 % 4 = 0, so no padding needed for 28-pixel rows.
-    const int rowStride    = ((width * 3 + 3) / 4) * 4;
-    const int pixelBytes   = rowStride * height;
-    const int fileSize     = 14 + 40 + pixelBytes;
-    const int pixelOffset  = 14 + 40;
+    // bmp rows are padded to 4-byte boundaries.
+    int rowStride   = ((width * 3 + 3) / 4) * 4;
+    int pixelBytes  = rowStride * height;
+    int fileSize    = 14 + 40 + pixelBytes;
+    int pixelOffset = 14 + 40;
 
     std::ofstream f(path, std::ios::binary);
     if (!f)
         throw std::runtime_error("Cannot create output file: " + path);
 
-    // ---- BITMAPFILEHEADER (14 bytes) ----
-    auto put32 = [&](int32_t v) {
-        f.put(static_cast<char>(v & 0xFF));
-        f.put(static_cast<char>((v >> 8) & 0xFF));
-        f.put(static_cast<char>((v >> 16) & 0xFF));
-        f.put(static_cast<char>((v >> 24) & 0xFF));
+    auto put32 = [&](int v) {
+        f.put((char)(v & 0xFF));
+        f.put((char)((v >> 8) & 0xFF));
+        f.put((char)((v >> 16) & 0xFF));
+        f.put((char)((v >> 24) & 0xFF));
     };
-    auto put16 = [&](int16_t v) {
-        f.put(static_cast<char>(v & 0xFF));
-        f.put(static_cast<char>((v >> 8) & 0xFF));
+    auto put16 = [&](int v) {
+        f.put((char)(v & 0xFF));
+        f.put((char)((v >> 8) & 0xFF));
     };
 
     f.put('B'); f.put('M');
     put32(fileSize);
-    put32(0);           // reserved
+    put32(0);
     put32(pixelOffset);
 
-    // ---- BITMAPINFOHEADER (40 bytes) ----
-    put32(40);           // header size
+    put32(40);
     put32(width);
-    put32(-height);      // negative = top-down row order
-    put16(1);            // color planes
-    put16(24);           // bits per pixel
-    put32(0);            // BI_RGB (no compression)
+    // negative height means top-down row order.
+    put32(-height);
+    put16(1);
+    put16(24);
+    put32(0);
     put32(pixelBytes);
-    put32(2835);         // ~72 DPI horizontal
-    put32(2835);         // ~72 DPI vertical
-    put32(0);            // colors in palette
-    put32(0);            // important colors
+    put32(2835);
+    put32(2835);
+    put32(0);
+    put32(0);
 
-    // ---- Pixel data (BGR order) ----
-    std::vector<uint8_t> row(static_cast<size_t>(rowStride), 0);
+    // pixel bytes are written in bgr order.
+    std::vector<uint8_t> row(rowStride, 0);
     for (int y = 0; y < height; ++y) {
         for (int x = 0; x < width; ++x) {
-            const uint8_t v = pixels[static_cast<size_t>(y * width + x)];
-            row[static_cast<size_t>(x * 3 + 0)] = v; // B
-            row[static_cast<size_t>(x * 3 + 1)] = v; // G
-            row[static_cast<size_t>(x * 3 + 2)] = v; // R
+            uint8_t v = pixels[y * width + x];
+            row[x * 3 + 0] = v;
+            row[x * 3 + 1] = v;
+            row[x * 3 + 2] = v;
         }
-        f.write(reinterpret_cast<const char *>(row.data()), rowStride);
+        f.write((const char*)row.data(), rowStride);
     }
 }
-
-// ---------------------------------------------------------------------------
-// main
-// ---------------------------------------------------------------------------
 
 int main(int argc, char **argv)
 {
@@ -278,19 +250,16 @@ int main(int argc, char **argv)
     std::cout << "=== Neural Canvas - Hexagon NPU Inference Engine ===" << std::endl;
     std::cout << "Selected backend: " << options.backend << "\n";
 
-    // ------------------------------------------------------------------
-    // 1. Load the six weight tensors
-    // ------------------------------------------------------------------
     const std::string wDir = "weights/";
 
     std::vector<float> fc1W, fc1b, fc2W, fc2b, fc3W, fc3b;
     try {
-        fc1W = loadBin(wDir + "fc1_weight.bin"); // [128, 16]
-        fc1b = loadBin(wDir + "fc1_bias.bin");   // [128]
-        fc2W = loadBin(wDir + "fc2_weight.bin"); // [512, 128]
-        fc2b = loadBin(wDir + "fc2_bias.bin");   // [512]
-        fc3W = loadBin(wDir + "fc3_weight.bin"); // [784, 512]
-        fc3b = loadBin(wDir + "fc3_bias.bin");   // [784]
+        fc1W = loadBin(wDir + "fc1_weight.bin");
+        fc1b = loadBin(wDir + "fc1_bias.bin");
+        fc2W = loadBin(wDir + "fc2_weight.bin");
+        fc2b = loadBin(wDir + "fc2_bias.bin");
+        fc3W = loadBin(wDir + "fc3_weight.bin");
+        fc3b = loadBin(wDir + "fc3_bias.bin");
     } catch (const std::exception &e) {
         std::cerr << "\n[ERROR] " << e.what() << std::endl;
         std::cerr << "Run the following scripts first:\n"
@@ -300,9 +269,6 @@ int main(int argc, char **argv)
     }
     std::cout << "[OK] Weights loaded." << std::endl;
 
-    // ------------------------------------------------------------------
-    // 2. Sample a random 16-dim latent vector z ~ N(0, 1)
-    // ------------------------------------------------------------------
     std::mt19937 rng{options.benchmark ? 12345u : std::random_device{}()};
     std::normal_distribution<float> stdNormal(0.0f, 1.0f);
 
@@ -316,9 +282,6 @@ int main(int argc, char **argv)
         std::cout << "]\n";
     }
 
-    // ------------------------------------------------------------------
-    // 3. Forward pass through selected backend (QNN NPU or native CPU)
-    // ------------------------------------------------------------------
     std::vector<float> out;
     double initMs = 0.0;
     double buildMs = 0.0;
@@ -336,24 +299,24 @@ int main(int argc, char **argv)
             }
 
             std::vector<double> latencies;
-            latencies.reserve(static_cast<size_t>(options.iters));
+            latencies.reserve(options.iters);
             for (int i = 0; i < options.iters; ++i) {
-                const auto t0 = std::chrono::high_resolution_clock::now();
+                auto t0 = std::chrono::high_resolution_clock::now();
                 runCpuDecoder(z, fc1W, fc1b, fc2W, fc2b, fc3W, fc3b, out);
-                const auto t1 = std::chrono::high_resolution_clock::now();
+                auto t1 = std::chrono::high_resolution_clock::now();
                 latencies.push_back(elapsedMs(t0, t1));
             }
 
             std::sort(latencies.begin(), latencies.end());
-            const double minMs = latencies.front();
-            const double maxMs = latencies.back();
-            const double sumMs = std::accumulate(latencies.begin(), latencies.end(), 0.0);
-            const double avgMs = sumMs / static_cast<double>(latencies.size());
-            const double p50Ms = latencies[latencies.size() / 2];
-            const size_t p95Idx = static_cast<size_t>(std::ceil(0.95 * latencies.size())) - 1;
-            const double p95Ms = latencies[std::min(p95Idx, latencies.size() - 1)];
-            const double throughput = 1000.0 / avgMs;
-            const double checksum = std::accumulate(out.begin(), out.end(), 0.0);
+            double minMs = latencies.front();
+            double maxMs = latencies.back();
+            double sumMs = std::accumulate(latencies.begin(), latencies.end(), 0.0);
+            double avgMs = sumMs / (double)latencies.size();
+            double p50Ms = latencies[latencies.size() / 2];
+            int p95Idx = (int)(0.95 * latencies.size()) - 1;
+            double p95Ms = latencies[std::min(p95Idx, (int)latencies.size() - 1)];
+            double throughput = 1000.0 / avgMs;
+            double checksum = std::accumulate(out.begin(), out.end(), 0.0);
 
             std::cout << std::fixed << std::setprecision(4);
             std::cout << "BENCHMARK_RESULT"
@@ -411,28 +374,28 @@ int main(int argc, char **argv)
             }
 
             std::vector<double> latencies;
-            latencies.reserve(static_cast<size_t>(options.iters));
+            latencies.reserve(options.iters);
 
             for (int i = 0; i < options.iters; ++i) {
-                const auto t0 = std::chrono::high_resolution_clock::now();
+                auto t0 = std::chrono::high_resolution_clock::now();
                 if (!qnn.runInference(z, out)) {
                     std::cerr << "[ERROR] Timed iteration failed at index " << i << "\n";
                     return 1;
                 }
-                const auto t1 = std::chrono::high_resolution_clock::now();
+                auto t1 = std::chrono::high_resolution_clock::now();
                 latencies.push_back(elapsedMs(t0, t1));
             }
 
             std::sort(latencies.begin(), latencies.end());
-            const double minMs = latencies.front();
-            const double maxMs = latencies.back();
-            const double sumMs = std::accumulate(latencies.begin(), latencies.end(), 0.0);
-            const double avgMs = sumMs / static_cast<double>(latencies.size());
-            const double p50Ms = latencies[latencies.size() / 2];
-            const size_t p95Idx = static_cast<size_t>(std::ceil(0.95 * latencies.size())) - 1;
-            const double p95Ms = latencies[std::min(p95Idx, latencies.size() - 1)];
-            const double throughput = 1000.0 / avgMs;
-            const double checksum = std::accumulate(out.begin(), out.end(), 0.0);
+            double minMs = latencies.front();
+            double maxMs = latencies.back();
+            double sumMs = std::accumulate(latencies.begin(), latencies.end(), 0.0);
+            double avgMs = sumMs / (double)latencies.size();
+            double p50Ms = latencies[latencies.size() / 2];
+            int p95Idx = (int)(0.95 * latencies.size()) - 1;
+            double p95Ms = latencies[std::min(p95Idx, (int)latencies.size() - 1)];
+            double throughput = 1000.0 / avgMs;
+            double checksum = std::accumulate(out.begin(), out.end(), 0.0);
 
             std::cout << std::fixed << std::setprecision(4);
             std::cout << "BENCHMARK_RESULT"
@@ -461,17 +424,10 @@ int main(int argc, char **argv)
     std::cout << "[OK] Forward pass complete.  Output range: ["
               << minVal << ", " << maxVal << "]\n";
 
-    // ------------------------------------------------------------------
-    // 4. Convert float [0,1] -> uint8 [0,255]
-    // ------------------------------------------------------------------
     std::vector<uint8_t> pixels(784);
     for (int i = 0; i < 784; ++i)
-        pixels[static_cast<size_t>(i)] =
-            static_cast<uint8_t>(out[static_cast<size_t>(i)] * 255.0f);
+        pixels[i] = (uint8_t)(out[i] * 255.0f);
 
-    // ------------------------------------------------------------------
-    // 5. Write 28x28 grayscale BMP
-    // ------------------------------------------------------------------
     const std::string outPath = options.outputPath;
     try {
         writeBMP(outPath, pixels, 28, 28);

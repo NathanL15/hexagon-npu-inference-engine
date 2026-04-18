@@ -12,10 +12,10 @@
 
 namespace {
 
-constexpr uint32_t kInputDim = 16;
-constexpr uint32_t kFc1Dim = 128;
-constexpr uint32_t kFc2Dim = 512;
-constexpr uint32_t kFc3Dim = 784;
+constexpr uint32_t INPUT_DIM = 16;
+constexpr uint32_t FC1_DIM = 128;
+constexpr uint32_t FC2_DIM = 512;
+constexpr uint32_t FC3_DIM = 784;
 
 void initTensorV1(Qnn_Tensor_t &tensor,
                   const char *name,
@@ -28,8 +28,8 @@ void initTensorV1(Qnn_Tensor_t &tensor,
     tensor.v1.type = type;
     tensor.v1.dataType = QNN_DATATYPE_FLOAT_32;
     tensor.v1.dataFormat = QNN_TENSOR_DATA_FORMAT_FLAT_BUFFER;
-    tensor.v1.rank = static_cast<uint32_t>(dims.size());
-    tensor.v1.dimensions = const_cast<uint32_t *>(dims.data());
+    tensor.v1.rank = (uint32_t)dims.size();
+    tensor.v1.dimensions = (uint32_t*)dims.data();
     tensor.v1.memType = QNN_TENSORMEMTYPE_RAW;
     if (type == QNN_TENSOR_TYPE_STATIC || type == QNN_TENSOR_TYPE_UPDATEABLE_STATIC) {
         tensor.v1.clientBuf.data = data;
@@ -88,13 +88,13 @@ struct QnnManager::Impl {
     std::vector<float> fc3MM;
     std::vector<float> outputBuf;
 
-    std::vector<uint32_t> dim1x16 = {1, kInputDim};
-    std::vector<uint32_t> dim128x16 = {kFc1Dim, kInputDim};
-    std::vector<uint32_t> dim1x128 = {1, kFc1Dim};
-    std::vector<uint32_t> dim512x128 = {kFc2Dim, kFc1Dim};
-    std::vector<uint32_t> dim1x512 = {1, kFc2Dim};
-    std::vector<uint32_t> dim784x512 = {kFc3Dim, kFc2Dim};
-    std::vector<uint32_t> dim1x784 = {1, kFc3Dim};
+    std::vector<uint32_t> dim1x16   = {1, INPUT_DIM};
+    std::vector<uint32_t> dim128x16 = {FC1_DIM, INPUT_DIM};
+    std::vector<uint32_t> dim1x128  = {1, FC1_DIM};
+    std::vector<uint32_t> dim512x128 = {FC2_DIM, FC1_DIM};
+    std::vector<uint32_t> dim1x512  = {1, FC2_DIM};
+    std::vector<uint32_t> dim784x512 = {FC3_DIM, FC2_DIM};
+    std::vector<uint32_t> dim1x784  = {1, FC3_DIM};
 
     Qnn_Tensor_t inputTensor = QNN_TENSOR_INIT;
     Qnn_Tensor_t fc1WeightTensor = QNN_TENSOR_INIT;
@@ -230,9 +230,9 @@ bool QnnManager::buildGraph(const std::vector<float> &fc1Weight,
         return false;
     }
 
-    if (fc1Weight.size() != kFc1Dim * kInputDim || fc1Bias.size() != kFc1Dim ||
-        fc2Weight.size() != kFc2Dim * kFc1Dim || fc2Bias.size() != kFc2Dim ||
-        fc3Weight.size() != kFc3Dim * kFc2Dim || fc3Bias.size() != kFc3Dim) {
+    if (fc1Weight.size() != FC1_DIM * INPUT_DIM || fc1Bias.size() != FC1_DIM ||
+        fc2Weight.size() != FC2_DIM * FC1_DIM || fc2Bias.size() != FC2_DIM ||
+        fc3Weight.size() != FC3_DIM * FC2_DIM || fc3Bias.size() != FC3_DIM) {
         std::cerr << "QNN build failed: invalid tensor sizes provided.\n";
         return false;
     }
@@ -244,14 +244,14 @@ bool QnnManager::buildGraph(const std::vector<float> &fc1Weight,
     impl_->fc3W = fc3Weight;
     impl_->fc3B = fc3Bias;
 
-    impl_->fc1MM.assign(kFc1Dim, 0.0f);
-    impl_->fc1Add.assign(kFc1Dim, 0.0f);
-    impl_->fc1Act.assign(kFc1Dim, 0.0f);
-    impl_->fc2MM.assign(kFc2Dim, 0.0f);
-    impl_->fc2Add.assign(kFc2Dim, 0.0f);
-    impl_->fc2Act.assign(kFc2Dim, 0.0f);
-    impl_->fc3MM.assign(kFc3Dim, 0.0f);
-    impl_->outputBuf.assign(kFc3Dim, 0.0f);
+    impl_->fc1MM.assign(FC1_DIM, 0.0f);
+    impl_->fc1Add.assign(FC1_DIM, 0.0f);
+    impl_->fc1Act.assign(FC1_DIM, 0.0f);
+    impl_->fc2MM.assign(FC2_DIM, 0.0f);
+    impl_->fc2Add.assign(FC2_DIM, 0.0f);
+    impl_->fc2Act.assign(FC2_DIM, 0.0f);
+    impl_->fc3MM.assign(FC3_DIM, 0.0f);
+    impl_->outputBuf.assign(FC3_DIM, 0.0f);
 
     if (impl_->graphBuilt) {
         impl_->releaseGraphOnly();
@@ -268,99 +268,26 @@ bool QnnManager::buildGraph(const std::vector<float> &fc1Weight,
         return false;
     }
 
-    initTensorV1(impl_->inputTensor,
-                 "latent_input",
-                 QNN_TENSOR_TYPE_APP_WRITE,
-                 impl_->dim1x16,
-                 nullptr,
-                 0);
+    auto bytes = [](auto &v) { return (uint32_t)(v.size() * 4); };
 
-    initTensorV1(impl_->fc1WeightTensor,
-                 "fc1_weight",
-                 QNN_TENSOR_TYPE_STATIC,
-                 impl_->dim128x16,
-                 impl_->fc1W.data(),
-                 static_cast<uint32_t>(impl_->fc1W.size() * sizeof(float)));
-    initTensorV1(impl_->fc1BiasTensor,
-                 "fc1_bias",
-                 QNN_TENSOR_TYPE_STATIC,
-                 impl_->dim1x128,
-                 impl_->fc1B.data(),
-                 static_cast<uint32_t>(impl_->fc1B.size() * sizeof(float)));
-    initTensorV1(impl_->fc1MatMulTensor,
-                 "fc1_matmul_out",
-                 QNN_TENSOR_TYPE_NATIVE,
-                 impl_->dim1x128,
-                 impl_->fc1MM.data(),
-                 static_cast<uint32_t>(impl_->fc1MM.size() * sizeof(float)));
-    initTensorV1(impl_->fc1AddTensor,
-                 "fc1_add_out",
-                 QNN_TENSOR_TYPE_NATIVE,
-                 impl_->dim1x128,
-                 impl_->fc1Add.data(),
-                 static_cast<uint32_t>(impl_->fc1Add.size() * sizeof(float)));
-    initTensorV1(impl_->fc1OutTensor,
-                 "fc1_relu_out",
-                 QNN_TENSOR_TYPE_NATIVE,
-                 impl_->dim1x128,
-                 impl_->fc1Act.data(),
-                 static_cast<uint32_t>(impl_->fc1Act.size() * sizeof(float)));
+    initTensorV1(impl_->inputTensor, "latent_input", QNN_TENSOR_TYPE_APP_WRITE, impl_->dim1x16, nullptr, 0);
 
-    initTensorV1(impl_->fc2WeightTensor,
-                 "fc2_weight",
-                 QNN_TENSOR_TYPE_STATIC,
-                 impl_->dim512x128,
-                 impl_->fc2W.data(),
-                 static_cast<uint32_t>(impl_->fc2W.size() * sizeof(float)));
-    initTensorV1(impl_->fc2BiasTensor,
-                 "fc2_bias",
-                 QNN_TENSOR_TYPE_STATIC,
-                 impl_->dim1x512,
-                 impl_->fc2B.data(),
-                 static_cast<uint32_t>(impl_->fc2B.size() * sizeof(float)));
-    initTensorV1(impl_->fc2MatMulTensor,
-                 "fc2_matmul_out",
-                 QNN_TENSOR_TYPE_NATIVE,
-                 impl_->dim1x512,
-                 impl_->fc2MM.data(),
-                 static_cast<uint32_t>(impl_->fc2MM.size() * sizeof(float)));
-    initTensorV1(impl_->fc2AddTensor,
-                 "fc2_add_out",
-                 QNN_TENSOR_TYPE_NATIVE,
-                 impl_->dim1x512,
-                 impl_->fc2Add.data(),
-                 static_cast<uint32_t>(impl_->fc2Add.size() * sizeof(float)));
-    initTensorV1(impl_->fc2OutTensor,
-                 "fc2_relu_out",
-                 QNN_TENSOR_TYPE_NATIVE,
-                 impl_->dim1x512,
-                 impl_->fc2Act.data(),
-                 static_cast<uint32_t>(impl_->fc2Act.size() * sizeof(float)));
+    initTensorV1(impl_->fc1WeightTensor, "fc1_weight", QNN_TENSOR_TYPE_STATIC, impl_->dim128x16, impl_->fc1W.data(), bytes(impl_->fc1W));
+    initTensorV1(impl_->fc1BiasTensor,   "fc1_bias",   QNN_TENSOR_TYPE_STATIC, impl_->dim1x128,  impl_->fc1B.data(), bytes(impl_->fc1B));
+    initTensorV1(impl_->fc1MatMulTensor, "fc1_matmul_out", QNN_TENSOR_TYPE_NATIVE, impl_->dim1x128, impl_->fc1MM.data(),  bytes(impl_->fc1MM));
+    initTensorV1(impl_->fc1AddTensor,    "fc1_add_out",    QNN_TENSOR_TYPE_NATIVE, impl_->dim1x128, impl_->fc1Add.data(), bytes(impl_->fc1Add));
+    initTensorV1(impl_->fc1OutTensor,    "fc1_relu_out",   QNN_TENSOR_TYPE_NATIVE, impl_->dim1x128, impl_->fc1Act.data(), bytes(impl_->fc1Act));
 
-    initTensorV1(impl_->fc3WeightTensor,
-                 "fc3_weight",
-                 QNN_TENSOR_TYPE_STATIC,
-                 impl_->dim784x512,
-                 impl_->fc3W.data(),
-                 static_cast<uint32_t>(impl_->fc3W.size() * sizeof(float)));
-    initTensorV1(impl_->fc3BiasTensor,
-                 "fc3_bias",
-                 QNN_TENSOR_TYPE_STATIC,
-                 impl_->dim1x784,
-                 impl_->fc3B.data(),
-                 static_cast<uint32_t>(impl_->fc3B.size() * sizeof(float)));
-    initTensorV1(impl_->fc3MatMulTensor,
-                 "fc3_matmul_out",
-                 QNN_TENSOR_TYPE_NATIVE,
-                 impl_->dim1x784,
-                 impl_->fc3MM.data(),
-                 static_cast<uint32_t>(impl_->fc3MM.size() * sizeof(float)));
-    initTensorV1(impl_->outputTensor,
-                 "decoder_output",
-                 QNN_TENSOR_TYPE_APP_READ,
-                 impl_->dim1x784,
-                 impl_->outputBuf.data(),
-                 static_cast<uint32_t>(impl_->outputBuf.size() * sizeof(float)));
+    initTensorV1(impl_->fc2WeightTensor, "fc2_weight", QNN_TENSOR_TYPE_STATIC, impl_->dim512x128, impl_->fc2W.data(), bytes(impl_->fc2W));
+    initTensorV1(impl_->fc2BiasTensor,   "fc2_bias",   QNN_TENSOR_TYPE_STATIC, impl_->dim1x512,   impl_->fc2B.data(), bytes(impl_->fc2B));
+    initTensorV1(impl_->fc2MatMulTensor, "fc2_matmul_out", QNN_TENSOR_TYPE_NATIVE, impl_->dim1x512, impl_->fc2MM.data(),  bytes(impl_->fc2MM));
+    initTensorV1(impl_->fc2AddTensor,    "fc2_add_out",    QNN_TENSOR_TYPE_NATIVE, impl_->dim1x512, impl_->fc2Add.data(), bytes(impl_->fc2Add));
+    initTensorV1(impl_->fc2OutTensor,    "fc2_relu_out",   QNN_TENSOR_TYPE_NATIVE, impl_->dim1x512, impl_->fc2Act.data(), bytes(impl_->fc2Act));
+
+    initTensorV1(impl_->fc3WeightTensor, "fc3_weight", QNN_TENSOR_TYPE_STATIC, impl_->dim784x512, impl_->fc3W.data(), bytes(impl_->fc3W));
+    initTensorV1(impl_->fc3BiasTensor,   "fc3_bias",   QNN_TENSOR_TYPE_STATIC, impl_->dim1x784,   impl_->fc3B.data(), bytes(impl_->fc3B));
+    initTensorV1(impl_->fc3MatMulTensor, "fc3_matmul_out", QNN_TENSOR_TYPE_NATIVE, impl_->dim1x784, impl_->fc3MM.data(),    bytes(impl_->fc3MM));
+    initTensorV1(impl_->outputTensor,    "decoder_output", QNN_TENSOR_TYPE_APP_READ, impl_->dim1x784, impl_->outputBuf.data(), bytes(impl_->outputBuf));
 
     Qnn_Tensor_t *allTensors[] = {
         &impl_->inputTensor,
@@ -392,12 +319,9 @@ bool QnnManager::buildGraph(const std::vector<float> &fc1Weight,
     initMatMulParams(impl_->matMulParams);
     initAddParams(impl_->addParams);
 
-    auto addNode = [&](const char *nodeName,
-                       const char *typeName,
-                       Qnn_Param_t *params,
-                       uint32_t numParams,
-                       Qnn_Tensor_t *inputs,
-                       uint32_t numInputs,
+    auto addNode = [&](const char *nodeName, const char *typeName,
+                       Qnn_Param_t *params, uint32_t numParams,
+                       Qnn_Tensor_t *inputs, uint32_t numInputs,
                        Qnn_Tensor_t *outputs,
                        uint32_t numOutputs) -> bool {
         Qnn_OpConfig_t op = QNN_OPCONFIG_INIT;
@@ -493,18 +417,18 @@ bool QnnManager::runInference(const std::vector<float> &input, std::vector<float
         std::cerr << "QNN graph is not built. Call buildGraph() first.\n";
         return false;
     }
-    if (input.size() != kInputDim) {
+    if (input.size() != INPUT_DIM) {
         std::cerr << "QNN run failed: expected input size 16, got " << input.size() << "\n";
         return false;
     }
 
     auto runInput = impl_->inputTensor;
-    runInput.v1.clientBuf.data = const_cast<float *>(input.data());
-    runInput.v1.clientBuf.dataSize = static_cast<uint32_t>(input.size() * sizeof(float));
+    runInput.v1.clientBuf.data = (float*)input.data();
+    runInput.v1.clientBuf.dataSize = (uint32_t)(input.size() * sizeof(float));
 
     auto runOutput = impl_->outputTensor;
     runOutput.v1.clientBuf.data = impl_->outputBuf.data();
-    runOutput.v1.clientBuf.dataSize = static_cast<uint32_t>(impl_->outputBuf.size() * sizeof(float));
+    runOutput.v1.clientBuf.dataSize = (uint32_t)(impl_->outputBuf.size() * sizeof(float));
 
     auto rc = impl_->iface->QNN_INTERFACE_VER_NAME.graphExecute(
         impl_->graph, &runInput, 1, &runOutput, 1, nullptr, nullptr);

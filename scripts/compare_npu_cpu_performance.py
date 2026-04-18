@@ -10,8 +10,6 @@ Power measurement:
     Units: EMI counters accumulate energy in nanojoules; power = delta_nJ / elapsed_s / 1e9.
 """
 
-from __future__ import annotations
-
 import argparse
 import math
 import re
@@ -20,24 +18,14 @@ import subprocess
 import sys
 import threading
 from pathlib import Path
-from typing import Dict, List, Optional
 
 RESULT_RE = re.compile(r"^BENCHMARK_RESULT\s+(.*)$")
 KV_RE = re.compile(r"([a-zA-Z0-9_]+)=([^\s]+)")
 
-# ---------------------------------------------------------------------------
-# Real-time power sampler via Windows EMI (Energy Metering Interface)
-# ---------------------------------------------------------------------------
-# PDH counters: \Energy Meter(<channel>)\Energy
-# Units: cumulative nanojoules.  Power = delta_nJ / elapsed_s / 1e9
-# Channels on Snapdragon X Elite (may vary by machine):
-#   cpu_cluster_0, cpu_cluster_1, cpu_cluster_2, gpu, sys
-# 'sys' = total SoC power draw.
+# emi channels can vary by machine.
 
 _EMI_CHANNELS = ["cpu_cluster_0", "cpu_cluster_1", "cpu_cluster_2", "gpu", "sys"]
 
-# PowerShell loop: samples every 200 ms, emits one line per tick:
-#   <timestamp_100ns_ticks> <ch0_nj> <ch1_nj> ... <chN_nj>
 _EMI_PS_SCRIPT = (
     "while ($true) {"
     " $ts = [datetime]::UtcNow.Ticks;"
@@ -63,9 +51,9 @@ class EmiPowerSampler:
     """
 
     def __init__(self) -> None:
-        self._readings: List[tuple] = []  # (ticks, [nJ per channel])
+        self._readings: list[tuple] = []  # (ticks, [nj per channel])
         self._stop = threading.Event()
-        self._proc: Optional[subprocess.Popen] = None  # type: ignore[type-arg]
+        self._proc: subprocess.Popen | None = None
         self._thread = threading.Thread(target=self._run, daemon=True)
         self._lock = threading.Lock()
 
@@ -102,7 +90,7 @@ class EmiPowerSampler:
             except (ValueError, IndexError):
                 pass
 
-    def _watts_per_channel(self) -> Optional[List[float]]:
+    def _watts_per_channel(self) -> list[float] | None:
         """Mean watts per channel averaged over all consecutive sample pairs."""
         with self._lock:
             readings = list(self._readings)
@@ -115,7 +103,7 @@ class EmiPowerSampler:
         for i in range(len(readings) - 1):
             t0, v0 = readings[i]
             t1, v1 = readings[i + 1]
-            elapsed_s = (t1 - t0) / 1e7  # 100ns ticks -> seconds
+            elapsed_s = (t1 - t0) / 1e7
             if elapsed_s <= 0:
                 continue
             for c in range(n_ch):
@@ -123,7 +111,7 @@ class EmiPowerSampler:
                     continue
                 if v0[c] < 0 or v1[c] < 0:
                     continue
-                sums[c] += (v1[c] - v0[c]) / elapsed_s / 1e9  # nJ/s -> W
+                sums[c] += (v1[c] - v0[c]) / elapsed_s / 1e9
             count += 1
 
         if count == 0:
@@ -134,25 +122,24 @@ class EmiPowerSampler:
         return _EMI_CHANNELS.index(name)
 
     @property
-    def avg_watts_sys(self) -> Optional[float]:
+    def avg_watts_sys(self) -> float | None:
         w = self._watts_per_channel()
         return w[self._idx("sys")] if w is not None else None
 
     @property
-    def avg_watts_cpu(self) -> Optional[float]:
-        """Sum of all cpu_cluster channels."""
+    def avg_watts_cpu(self) -> float | None:
         w = self._watts_per_channel()
         if w is None:
             return None
         return sum(w[i] for i, ch in enumerate(_EMI_CHANNELS) if ch.startswith("cpu_cluster"))
 
     @property
-    def avg_watts_gpu(self) -> Optional[float]:
+    def avg_watts_gpu(self) -> float | None:
         w = self._watts_per_channel()
         return w[self._idx("gpu")] if w is not None else None
 
     @property
-    def peak_watts_sys(self) -> Optional[float]:
+    def peak_watts_sys(self) -> float | None:
         """Peak instantaneous system watts across all sample pairs."""
         with self._lock:
             readings = list(self._readings)
@@ -170,17 +157,13 @@ class EmiPowerSampler:
         return peak if peak > 0 else None
 
 
-# ---------------------------------------------------------------------------
-# Result parsing
-# ---------------------------------------------------------------------------
-
-def parse_result(stdout: str) -> Dict[str, float | str]:
+def parse_result(stdout: str) -> dict:
     for line in stdout.splitlines():
         match = RESULT_RE.match(line.strip())
         if not match:
             continue
         payload = match.group(1)
-        values: Dict[str, float | str] = {}
+        values = {}
         for key, raw_value in KV_RE.findall(payload):
             if key == "backend":
                 values[key] = raw_value
@@ -193,16 +176,12 @@ def parse_result(stdout: str) -> Dict[str, float | str]:
     raise ValueError("Missing BENCHMARK_RESULT line in executable output.")
 
 
-# ---------------------------------------------------------------------------
-# Backend runner
-# ---------------------------------------------------------------------------
-
-def run_backend(exe: Path, backend: str, warmup: int, iters: int, repeats: int) -> Dict[str, float | str]:
-    runs: List[Dict[str, float | str]] = []
-    sys_samples: List[float] = []
-    cpu_samples: List[float] = []
-    gpu_samples: List[float] = []
-    peak_samples: List[float] = []
+def run_backend(exe: Path, backend: str, warmup: int, iters: int, repeats: int) -> dict:
+    runs: list[dict] = []
+    sys_samples: list[float] = []
+    cpu_samples: list[float] = []
+    gpu_samples: list[float] = []
+    peak_samples: list[float] = []
 
     for idx in range(repeats):
         cmd = [str(exe), "--benchmark", "--backend", backend,
@@ -232,7 +211,7 @@ def run_backend(exe: Path, backend: str, warmup: int, iters: int, repeats: int) 
             peak_samples.append(sampler.peak_watts_sys)
 
     numeric_keys = [k for k, v in runs[0].items() if isinstance(v, float)]
-    merged: Dict[str, float | str] = {"backend": backend}
+    merged: dict = {"backend": backend}
     for key in numeric_keys:
         merged[key] = statistics.mean(float(run[key]) for run in runs)
 
@@ -246,10 +225,6 @@ def run_backend(exe: Path, backend: str, warmup: int, iters: int, repeats: int) 
     return merged
 
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
 def pct_change(old: float, new: float) -> float:
     if old == 0.0:
         return 0.0
@@ -260,13 +235,9 @@ def fw(val: float) -> str:
     return f"{val:.3f} W" if not math.isnan(val) else "N/A"
 
 
-def fj(val: Optional[float]) -> str:
+def fj(val) -> str:
     return f"{val:.2f} inf/J" if val is not None else "N/A"
 
-
-# ---------------------------------------------------------------------------
-# main
-# ---------------------------------------------------------------------------
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Compare QNN NPU and CPU backend performance.")
@@ -299,7 +270,6 @@ def main() -> int:
     print(f"Running benchmark for CPU backend ({args.repeats} repeats)...")
     cpu = run_backend(args.exe, "cpu", args.warmup, args.iters, args.repeats)
 
-    # --- latency ---
     npu_avg  = float(npu["avg_ms"])
     cpu_avg  = float(cpu["avg_ms"])
     npu_tp   = float(npu["throughput_fps"])
@@ -307,7 +277,6 @@ def main() -> int:
     npu_cold = float(npu["init_ms"]) + float(npu["build_ms"]) + float(npu["cold_ms"])
     cpu_cold = float(cpu["init_ms"]) + float(cpu["build_ms"]) + float(cpu["cold_ms"])
 
-    # --- power ---
     npu_sys_w  = float(npu["avg_watts_sys"])
     cpu_sys_w  = float(cpu["avg_watts_sys"])
     npu_cpu_w  = float(npu["avg_watts_cpu"])
@@ -318,7 +287,6 @@ def main() -> int:
     cpu_peak_w = float(cpu["peak_watts_sys"])
     power_ok   = npu["power_ok"] == "yes" and cpu["power_ok"] == "yes"
 
-    # --- derived ---
     speedup  = cpu_avg / npu_avg if npu_avg > 0 else 0.0
     lat_red  = -pct_change(cpu_avg, npu_avg)
     tp_gain  = pct_change(cpu_tp, npu_tp)
@@ -329,7 +297,6 @@ def main() -> int:
     npu_ipj = npu_tp / npu_sys_w if (power_ok and not math.isnan(npu_sys_w) and npu_sys_w > 0) else None
     cpu_ipj = cpu_tp / cpu_sys_w if (power_ok and not math.isnan(cpu_sys_w) and cpu_sys_w > 0) else None
 
-    # --- output ---
     print(f"\n=== Backend Comparison (means across {args.repeats} repeats) ===")
     print(f"Warmup: {args.warmup}  |  Timed iters: {args.iters}")
     if not power_ok:

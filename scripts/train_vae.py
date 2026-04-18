@@ -1,31 +1,4 @@
-"""
-Neural Canvas - VAE Decoder Trainer
-=====================================
-A Variational Autoencoder (VAE) forces the encoder to pack all digit
-representations into a smooth, continuous Gaussian ball in latent space.
-Any random point you sample from that ball decodes into a coherent image --
-no dead zones, no static.
-
-Architecture
-------------
-Encoder:  784 -> 512 -> 128 -> mu(16)  +  log_var(16)
-                                  |
-               reparameterization: z = mu + eps * exp(0.5 * log_var)
-                                  |
-Decoder:  z(16) -> 128 -> 512 -> 784  (identical to the GAN Generator)
-
-Loss = Reconstruction (BCE) + beta * KL divergence
-       KL = -0.5 * sum(1 + log_var - mu^2 - exp(log_var))
-
-After training ONLY the Decoder weights are saved to weights/generator.pth
-using the same state-dict key layout as train_generator.py.  This means:
-  - extract_generator_weights.py   -- unchanged
-  - main.cpp / C++ engine          -- unchanged
-
-Output: weights/generator.pth
-
-Default dataset: MNIST (handwritten digits)
-"""
+"""train a vae and save only decoder weights to weights/generator.pth."""
 
 import os
 import torch
@@ -34,18 +7,10 @@ import torch.nn.functional as F
 import torch.optim as optim
 
 
-# ---------------------------------------------------------------------------
-# Constants
-# ---------------------------------------------------------------------------
-
 LATENT_DIM = 16
 IMG_SIZE    = 784   # 28 * 28
-BETA        = 1.0   # weight on the KL term; increase to tighten the Gaussian ball
+BETA        = 1.0
 
-
-# ---------------------------------------------------------------------------
-# Model definitions
-# ---------------------------------------------------------------------------
 
 class Encoder(nn.Module):
     """Maps a flat 784-dim image to (mu, log_var) in R^LATENT_DIM."""
@@ -67,7 +32,7 @@ class Encoder(nn.Module):
 
 
 class Decoder(nn.Module):
-    """Identical to the GAN Generator -- state-dict keys are preserved."""
+    """same layout as the gan generator so extractor keys still match."""
 
     def __init__(self):
         super().__init__()
@@ -91,7 +56,7 @@ class VAE(nn.Module):
         self.decoder = Decoder()
 
     def reparameterize(self, mu, log_var):
-        """z = mu + eps * std,  eps ~ N(0, I)"""
+        """reparameterization trick: z = mu + eps * std."""
         std = torch.exp(0.5 * log_var)
         eps = torch.randn_like(std)
         return mu + eps * std
@@ -103,25 +68,12 @@ class VAE(nn.Module):
         return recon, mu, log_var
 
 
-# ---------------------------------------------------------------------------
-# ELBO loss
-# ---------------------------------------------------------------------------
-
 def vae_loss(recon, target, mu, log_var, beta: float = BETA):
-    """
-    ELBO = E[log p(x|z)]  - beta * KL(q(z|x) || p(z))
-    Reconstruction term uses BCE (pixel-wise), KL is the closed-form Gaussian.
-    """
-    # Sum over pixels, mean over batch
+    """elbo with bce recon term and gaussian kl term."""
     recon_loss = F.binary_cross_entropy(recon, target, reduction="sum") / target.size(0)
-    # -0.5 * sum(1 + log_var - mu^2 - exp(log_var))
     kl_loss    = -0.5 * torch.sum(1 + log_var - mu.pow(2) - log_var.exp()) / target.size(0)
     return recon_loss + beta * kl_loss, recon_loss, kl_loss
 
-
-# ---------------------------------------------------------------------------
-# Data loading helpers
-# ---------------------------------------------------------------------------
 
 def _load_mnist(batch_size: int):
     """Return a DataLoader for MNIST, or None if torchvision absent."""
@@ -149,16 +101,12 @@ def _load_mnist(batch_size: int):
 
 
 def _make_noise_loader(batch_size: int, num_batches: int = 400):
-    """Fallback: random binary patterns.  The VAE still learns a smooth space."""
+    """fallback random patterns if torchvision is unavailable."""
     print("[INFO] torchvision not found -- using synthetic noise dataset.")
     data    = torch.rand(num_batches * batch_size, IMG_SIZE)
     dataset = torch.utils.data.TensorDataset(data)
     return torch.utils.data.DataLoader(dataset, batch_size=batch_size, shuffle=True)
 
-
-# ---------------------------------------------------------------------------
-# Training
-# ---------------------------------------------------------------------------
 
 def train(
     output_path: str = "weights/generator.pth",
@@ -207,7 +155,7 @@ def train(
                 f"KL: {total_kl / batches:6.2f}"
             )
 
-    # Save ONLY the decoder so the C++ engine and extractor are unchanged.
+    # save only the decoder so extractor and c++ runtime stay compatible.
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
     torch.save(model.decoder.state_dict(), output_path)
     print(f"\n[DONE] Decoder saved to '{output_path}'")

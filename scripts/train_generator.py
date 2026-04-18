@@ -1,28 +1,10 @@
-"""
-Neural Canvas - GAN Generator Trainer
-======================================
-Architecture (Generator):
-    Linear(16, 128) -> ReLU
-    Linear(128, 512) -> ReLU
-    Linear(512, 784) -> Sigmoid
-
-Trains a GAN on MNIST (28x28 grayscale digits).  If torchvision is not
-installed the script falls back to a self-supervised autoencoder that learns
-to reconstruct random binary-noise patterns, which is enough to produce
-a trained weight file that the C++ engine can load.
-
-Output: weights/generator.pth
-"""
+"""train a small gan generator and save weights/generator.pth."""
 
 import os
 import torch
 import torch.nn as nn
 import torch.optim as optim
 
-
-# ---------------------------------------------------------------------------
-# Model definitions
-# ---------------------------------------------------------------------------
 
 LATENT_DIM = 16
 IMG_SIZE = 784  # 28 * 28
@@ -59,10 +41,6 @@ class Discriminator(nn.Module):
         return self.net(x)
 
 
-# ---------------------------------------------------------------------------
-# Data loading helpers
-# ---------------------------------------------------------------------------
-
 def _load_mnist(batch_size: int):
     """Return a DataLoader for MNIST, or None if torchvision absent."""
     try:
@@ -70,8 +48,8 @@ def _load_mnist(batch_size: int):
         import torchvision.transforms as transforms
 
         transform = transforms.Compose([
-            transforms.ToTensor(),          # [0, 1] float32
-            transforms.Lambda(lambda t: t.view(-1)),  # flatten to 784
+            transforms.ToTensor(),
+            transforms.Lambda(lambda t: t.view(-1)),
         ])
         dataset = torchvision.datasets.MNIST(
             root="weights/data",
@@ -95,10 +73,6 @@ def _make_noise_loader(batch_size: int, num_batches: int = 200):
     dataset = torch.utils.data.TensorDataset(data)
     return torch.utils.data.DataLoader(dataset, batch_size=batch_size, shuffle=True)
 
-
-# ---------------------------------------------------------------------------
-# Training
-# ---------------------------------------------------------------------------
 
 def train(
     output_path: str = "weights/generator.pth",
@@ -136,19 +110,14 @@ def train(
         for batch in loader:
             real = batch[0].to(device) if fallback else batch[0].to(device)
 
-            # ------------------------------------------------------------------
-            # Train Discriminator
-            # ------------------------------------------------------------------
             disc.zero_grad()
 
-            # Real images
             out_real = disc(real)
             labels_real = torch.full(
                 (real.size(0), 1), real_label, device=device
             )
             loss_real = criterion(out_real, labels_real)
 
-            # Fake images
             z = torch.randn(real.size(0), LATENT_DIM, device=device)
             fake = gen(z).detach()
             out_fake = disc(fake)
@@ -161,15 +130,12 @@ def train(
             loss_d.backward()
             opt_d.step()
 
-            # ------------------------------------------------------------------
-            # Train Generator
-            # ------------------------------------------------------------------
             gen.zero_grad()
 
             z = torch.randn(real.size(0), LATENT_DIM, device=device)
             fake = gen(z)
             out_g = disc(fake)
-            loss_g = criterion(out_g, labels_real)  # fool discriminator
+            loss_g = criterion(out_g, labels_real)
             loss_g.backward()
             opt_g.step()
 

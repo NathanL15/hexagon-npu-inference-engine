@@ -1,18 +1,4 @@
-"""
-Neural Canvas - Generator Weight Extractor
-==========================================
-Reads weights/generator.pth and writes each tensor as a flat little-endian
-float32 binary file that the C++ engine loads directly with fread():
-
-    weights/fc1_weight.bin   shape [128, 16]   -> 2048 floats
-    weights/fc1_bias.bin     shape [128]        ->  128 floats
-    weights/fc2_weight.bin   shape [512, 128]   -> 65536 floats
-    weights/fc2_bias.bin     shape [512]        ->  512 floats
-    weights/fc3_weight.bin   shape [784, 512]   -> 401408 floats
-    weights/fc3_bias.bin     shape [784]        ->  784 floats
-
-Binary layout: raw IEEE-754 float32 values, no header, row-major (C order).
-"""
+"""extract decoder weights from generator.pth into raw float32 .bin files."""
 
 import os
 import struct
@@ -21,7 +7,7 @@ import sys
 import torch
 
 
-# Map from PyTorch state-dict keys to output filenames
+# map pytorch state-dict keys to output filenames.
 _KEY_MAP = {
     "net.0.weight": "fc1_weight.bin",
     "net.0.bias":   "fc1_bias.bin",
